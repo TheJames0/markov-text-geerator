@@ -185,6 +185,7 @@ public:
         for (size_t i = 1; i < sentences.size(); ++i)
             result += " " + sentences[i];
         result = polishNouns(result, genre);
+        result = wfcExpand(result, genre);
         return result;
     }
 
@@ -331,6 +332,42 @@ private:
         }
     }
 
+    static std::string wordLower(const std::string& w) {
+        std::string s = w;
+        std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+        while (!s.empty() && std::ispunct(static_cast<unsigned char>(s.back())))
+            s.pop_back();
+        return s;
+    }
+
+    static bool isNounTag(const std::string& pos) {
+        return pos.size() >= 2 && pos[0] == 'N';
+    }
+
+    bool swapCreatesDoubleNoun(const std::vector<std::string>& words, size_t i,
+                               const std::string& candFmt) const {
+        // Check if the swap would put two nouns adjacent
+        if (i > 0) {
+            std::string prev = wordLower(words[i - 1]);
+            std::string cand = wordLower(candFmt);
+            auto pp = posCache.find(prev);
+            auto cp = posCache.find(cand);
+            if (pp != posCache.end() && cp != posCache.end()
+                && isNounTag(pp->second) && isNounTag(cp->second))
+                return true;
+        }
+        if (i + 1 < words.size()) {
+            std::string cand = wordLower(candFmt);
+            std::string next = wordLower(words[i + 1]);
+            auto cp = posCache.find(cand);
+            auto np = posCache.find(next);
+            if (cp != posCache.end() && np != posCache.end()
+                && isNounTag(cp->second) && isNounTag(np->second))
+                return true;
+        }
+        return false;
+    }
+
     std::string polishNouns(const std::string& text, const std::string& genre) const {
         if (swaps.empty()) return text;
         std::vector<std::string> words;
@@ -342,15 +379,11 @@ private:
         for (int pass = 0; pass < 3; ++pass) {
             bool changed = false;
             for (size_t i = 0; i < words.size(); ++i) {
-                std::string clean = words[i];
-                std::transform(clean.begin(), clean.end(), clean.begin(), ::tolower);
-                while (!clean.empty() && std::ispunct(static_cast<unsigned char>(clean.back())))
-                    clean.pop_back();
+                std::string clean = wordLower(words[i]);
                 if (clean.empty()) continue;
 
                 auto pit = posCache.find(clean);
-                if (pit == posCache.end() || pit->second.size() < 2 || pit->second[0] != 'N')
-                    continue;
+                if (pit == posCache.end() || !isNounTag(pit->second)) continue;
 
                 auto sit = swaps.find(clean);
                 if (sit == swaps.end() || sit->second.empty()) continue;
@@ -363,6 +396,8 @@ private:
                     std::string candFmt = cand;
                     if (std::isupper(static_cast<unsigned char>(words[i][0])))
                         candFmt[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(cand[0])));
+
+                    if (swapCreatesDoubleNoun(words, i, candFmt)) continue;
 
                     std::string modified = words[0];
                     for (size_t j = 1; j < words.size(); ++j)
@@ -378,6 +413,113 @@ private:
                 if (bestWord != words[i]) {
                     words[i] = bestWord;
                     changed = true;
+                }
+            }
+            if (!changed) break;
+        }
+
+        std::string result = words[0];
+        for (size_t i = 1; i < words.size(); ++i)
+            result += " " + words[i];
+        return result;
+    }
+
+    std::string wfcExpand(const std::string& text, const std::string& genre) const {
+        std::vector<std::string> words;
+        std::istringstream iss(text);
+        std::string w;
+        while (iss >> w) words.push_back(w);
+        if (words.size() < 4) return text;
+
+        auto windowText = [&](const std::vector<std::string>& wrds,
+                              size_t center, int radius) -> std::string {
+            int start = static_cast<int>(center) - radius;
+            if (start < 0) start = 0;
+            size_t end = std::min(center + static_cast<size_t>(radius), wrds.size() - 1);
+            if (start > static_cast<int>(end)) return "";
+            std::string r = wrds[start];
+            for (int k = start + 1; k <= static_cast<int>(end); ++k)
+                r += " " + wrds[k];
+            return r;
+        };
+
+        static const std::unordered_set<std::string> SKIP_LEFT = {
+            "the", "a", "an", "this", "that", "these", "those",
+            "and", "but", "or", "yet", "so", "nor", "for",
+            "although", "though", "because", "since", "while", "when",
+            "whenever", "wherever", "whereas", "unless", "until", "after",
+            "before", "once", "if", "whether", "as"
+        };
+        auto skipAt = [&](size_t i) -> bool {
+            std::string lc = wordLower(words[i]);
+            if (lc.empty()) return true;
+            if (lc.back() == '.' || lc.back() == ',') return true;
+            if (SKIP_LEFT.count(lc)) return true;
+            return false;
+        };
+
+        for (int pass = 0; pass < 3; ++pass) {
+            bool changed = false;
+            for (size_t i = 0; i + 1 < words.size(); ++i) {
+                if (skipAt(i) || skipAt(i + 1)) continue;
+
+                double basePpl = combinedPerplexity(genre,
+                    windowText(words, i, 4));
+
+                // Try determiners after words that need them
+                std::string best;
+                double bestPpl = basePpl;
+                std::string left = wordLower(words[i]);
+                std::string right = wordLower(words[i + 1]);
+
+                auto pIt = posCache.find(right);
+                if (pIt != posCache.end() && isNounTag(pIt->second)) {
+                    static const char* DETS[] = {"the", "a", "an", "this", "that", "no"};
+                    for (auto d : DETS) {
+                        words.insert(words.begin() + i + 1, d);
+                        double ppl = combinedPerplexity(genre,
+                            windowText(words, i + 1, 4));
+                        if (ppl < bestPpl * 0.96) { bestPpl = ppl; best = d; }
+                        words.erase(words.begin() + i + 1);
+                    }
+                }
+
+                // Try prepositions after verbs before nouns
+                auto pLeft = posCache.find(left);
+                if (pLeft != posCache.end() && pLeft->second[0] == 'V'
+                    && pIt != posCache.end() && isNounTag(pIt->second)) {
+                    static const char* PREPS[] = {"in", "on", "at", "over", "into",
+                        "through", "across", "from", "with", "by", "for", "of", "to",
+                        "toward", "under", "beneath", "behind", "beyond", "between"};
+                    for (auto p : PREPS) {
+                        words.insert(words.begin() + i + 1, p);
+                        double ppl = combinedPerplexity(genre,
+                            windowText(words, i + 1, 4));
+                        if (ppl < bestPpl * 0.96) { bestPpl = ppl; best = p; }
+                        words.erase(words.begin() + i + 1);
+                    }
+                }
+
+                // Try conjunctions between nouns or verbs
+                bool nounNoun = pLeft != posCache.end() && isNounTag(pLeft->second)
+                    && pIt != posCache.end() && isNounTag(pIt->second);
+                bool verbVerb = pLeft != posCache.end() && pLeft->second[0] == 'V'
+                    && pIt != posCache.end() && pIt->second[0] == 'V';
+                if (nounNoun || verbVerb) {
+                    static const char* CONJS[] = {"and", "but", "or", "yet", "so"};
+                    for (auto c : CONJS) {
+                        words.insert(words.begin() + i + 1, c);
+                        double ppl = combinedPerplexity(genre,
+                            windowText(words, i + 1, 4));
+                        if (ppl < bestPpl * 0.96) { bestPpl = ppl; best = c; }
+                        words.erase(words.begin() + i + 1);
+                    }
+                }
+
+                if (!best.empty()) {
+                    words.insert(words.begin() + i + 1, best);
+                    changed = true;
+                    ++i;
                 }
             }
             if (!changed) break;
@@ -451,6 +593,10 @@ private:
 
                 for (const auto& cand : sit->second) {
                     if (cand == sw[i]) continue;
+                    // Skip swap if it creates adjacent nouns
+                    if (i > 0 && isNounTag(posCache[sw[i-1]]) && isNounTag(posCache[cand])) continue;
+                    if (i + 1 < sw.size() && isNounTag(posCache[cand]) && isNounTag(posCache[sw[i+1]])) continue;
+
                     std::string orig = sw[i];
                     sw[i] = cand;
                     double newPpl = computeCombinedPpl(sw);
