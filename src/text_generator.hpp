@@ -1,0 +1,401 @@
+#pragma once
+
+#include "markov_chain.hpp"
+#include "pos_tagger.hpp"
+#include "word_association_classifier.hpp"
+
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <random>
+#include <sstream>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+namespace fs = std::filesystem;
+
+class TextGenerator {
+public:
+    TextGenerator() : tagger("./udpipe", "models/english.udpipe"), rng(std::random_device{}()) {}
+
+    void loadDataset(const std::string& dataDir, const std::string& embeddingsFile = "") {
+        if (!embeddingsFile.empty()) {
+            if (classifier.loadEmbeddings(embeddingsFile))
+                std::cout << "  Loaded embeddings (" << classifier.dimension() << "d, "
+                          << classifier.vocabSize() << " words)\n";
+            else
+                std::cout << "  Warning: could not load embeddings\n";
+        }
+
+        if (!fs::exists(dataDir)) return;
+
+        for (const auto& entry : fs::directory_iterator(dataDir)) {
+            if (!entry.is_regular_file() || entry.path().extension() != ".txt") continue;
+
+            std::string genre = entry.path().stem().string();
+            std::ifstream file(entry.path());
+            std::vector<std::string> lines;
+            std::string line;
+
+            while (std::getline(file, line)) {
+                if (!line.empty()) {
+                    chains[genre].train(line);
+                    lines.push_back(line);
+                }
+            }
+            classifier.loadGenre(genre, lines);
+            lore[genre] = std::move(lines);
+            std::cout << "  Loaded '" << genre << "' (" << lore[genre].size() << " phrases)\n";
+        }
+        std::cout << "Loaded " << chains.size() << " genres.\n";
+
+        buildSwapCandidates();
+    }
+
+    std::string generate(const std::string& genre, int wordCount,
+                         double swapProb = 0.15) const {
+        auto it = chains.find(genre);
+        if (it == chains.end() || it->second.empty()) return "";
+
+        std::uniform_real_distribution<double> roll(0.0, 1.0);
+        std::vector<std::string> sentences;
+        std::unordered_set<std::string> usedSentences;
+        int totalWords = 0;
+        int targetWords = std::max(wordCount, 8);
+
+        while (totalWords < targetWords) {
+            std::vector<std::string> sw;
+            std::vector<std::string> orig;
+            Prefix cur = it->second.randomStart();
+            sw.push_back(cur.first);
+            sw.push_back(cur.second);
+            orig.push_back(cur.first);
+            orig.push_back(cur.second);
+
+            for (int step = 0; step < 24; ++step) {
+                if (!it->second.hasPrefix(cur)) break;
+                std::string next = it->second.randomNext(cur);
+                if (next == MarkovChain::END_TOKEN) break;
+
+                std::string out = next;
+                if (roll(rng) < swapProb) {
+                    auto sit = swaps.find(next);
+                    if (sit != swaps.end() && !sit->second.empty()) {
+                        std::uniform_int_distribution<size_t> p(0, sit->second.size() - 1);
+                        std::string cand = sit->second[p(rng)];
+                        if (it->second.wordProb(cur, cand) > 0 || roll(rng) < 0.15)
+                            out = cand;
+                    }
+                }
+                sw.push_back(out);
+                orig.push_back(next);
+                cur = {cur.second, next};
+            }
+
+            if (sw.size() < 10) continue;
+            while (!sw.empty() && isDangling(sw.back())) { sw.pop_back(); orig.pop_back(); }
+            if (sw.size() < 8) continue;
+
+            bool hasRepeat = false;
+            for (size_t i = 1; i < sw.size(); ++i)
+                if (sw[i] == sw[i-1]) { hasRepeat = true; break; }
+            if (hasRepeat) continue;
+
+            {
+                std::string origText = orig[0];
+                for (size_t oi = 1; oi < orig.size(); ++oi)
+                    origText += " " + orig[oi];
+                if (sentencePerplexity(genre, origText) > 45.0) continue;
+            }
+
+            {
+                std::string checkText = sw[0];
+                for (size_t ci = 1; ci < sw.size(); ++ci)
+                    checkText += " " + sw[ci];
+                auto scores = classifier.getScores(checkText);
+                bool genreMatch = false;
+                for (const auto& [g, s] : scores)
+                    if (g == genre && s > 0) { genreMatch = true; break; }
+                if (!genreMatch) continue;
+            }
+
+            if (roll(rng) < 0.5) enhanceDescriptive(sw, genre);
+
+            {
+                std::string checkText = sw[0];
+                for (size_t ci = 1; ci < sw.size(); ++ci)
+                    checkText += " " + sw[ci];
+                auto scores = classifier.getScores(checkText);
+                bool genreMatch = false;
+                for (const auto& [g, s] : scores)
+                    if (g == genre && s > 0) { genreMatch = true; break; }
+                if (!genreMatch) continue;
+            }
+
+            polishSentence(sw, genre);
+
+            sw[0][0] = static_cast<char>(std::toupper(static_cast<unsigned char>(sw[0][0])));
+            std::string sentence = sw[0];
+            for (size_t i = 1; i < sw.size(); ++i)
+                sentence += " " + sw[i];
+            sentence += ".";
+
+            if (usedSentences.count(sentence)) continue;
+            usedSentences.insert(sentence);
+
+            sentences.push_back(sentence);
+            totalWords += static_cast<int>(sw.size());
+        }
+
+        if (sentences.empty()) return "";
+        std::string result = sentences[0];
+        for (size_t i = 1; i < sentences.size(); ++i)
+            result += " " + sentences[i];
+        return result;
+    }
+
+    double sentencePerplexity(const std::string& genre, const std::string& text) const {
+        auto it = chains.find(genre);
+        if (it == chains.end()) return 100.0;
+        auto words = tokenize(text);
+        if (words.size() < 3) return 100.0;
+        double totalLogProb = 0.0;
+        int count = 0;
+        for (size_t i = 2; i < words.size(); ++i) {
+            Prefix p{words[i-2], words[i-1]};
+            double lp = it->second.logProb(p, words[i]);
+            totalLogProb += lp;
+            ++count;
+        }
+        if (count == 0) return 100.0;
+        return std::exp(-totalLogProb / count);
+    }
+
+    std::vector<std::pair<std::string, double>> classify(const std::string& text) const {
+        return classifier.getScores(text);
+    }
+
+    std::vector<std::string> getGenres() const {
+        std::vector<std::string> result;
+        for (const auto& [g, _] : chains) result.push_back(g);
+        return result;
+    }
+
+    bool empty() const { return chains.empty(); }
+    void setAddLore(bool v) { addLore = v; }
+    POSTagger& getTagger() { return tagger; }
+
+private:
+    std::unordered_map<std::string, MarkovChain> chains;
+    std::unordered_map<std::string, std::vector<std::string>> lore;
+    WordAssociationClassifier classifier;
+    std::unordered_map<std::string, std::vector<std::string>> swaps;
+    std::unordered_map<std::string, std::vector<std::pair<std::string, std::vector<double>>>> genreAdjectives;
+    POSTagger tagger;
+    mutable std::mt19937 rng;
+    bool addLore = true;
+
+    void polishSentence(std::vector<std::string>& sw, const std::string& genre) const {
+        auto cit = chains.find(genre);
+        if (cit == chains.end() || sw.size() < 3) return;
+        const auto& chain = cit->second;
+
+        auto computePpl = [&](const std::vector<std::string>& w) -> double {
+            double total = 0;
+            int cnt = 0;
+            for (size_t i = 2; i < w.size(); ++i) {
+                total += chain.logProb(Prefix{w[i-2], w[i-1]}, w[i]);
+                ++cnt;
+            }
+            return cnt > 0 ? std::exp(-total / cnt) : 100.0;
+        };
+
+        for (int pass = 0; pass < 3; ++pass) {
+            double basePpl = computePpl(sw);
+            bool improved = false;
+
+            for (size_t i = 2; i < sw.size(); ++i) {
+                auto pit = posCache.find(sw[i]);
+                if (pit == posCache.end() || !isContent(pit->second)) continue;
+
+                auto sit = swaps.find(sw[i]);
+                if (sit == swaps.end() || sit->second.empty()) continue;
+
+                std::string bestWord = sw[i];
+                double bestPpl = basePpl;
+
+                for (const auto& cand : sit->second) {
+                    if (cand == sw[i]) continue;
+                    std::string orig = sw[i];
+                    sw[i] = cand;
+                    double newPpl = computePpl(sw);
+                    if (newPpl < bestPpl * 0.99) {
+                        bestPpl = newPpl;
+                        bestWord = cand;
+                    }
+                    sw[i] = orig;
+                }
+
+                if (bestWord != sw[i]) {
+                    sw[i] = bestWord;
+                    basePpl = bestPpl;
+                    improved = true;
+                }
+            }
+
+            if (!improved) break;
+        }
+    }
+
+    void enhanceDescriptive(std::vector<std::string>& sw, const std::string& genre) const {
+        auto adjs = genreAdjectives.find(genre);
+        if (adjs == genreAdjectives.end() || adjs->second.empty()) return;
+
+        std::vector<size_t> nounPos;
+        for (size_t i = 0; i < sw.size(); ++i) {
+            auto pit = posCache.find(sw[i]);
+            if (pit != posCache.end() && pit->second.size() >= 2 && pit->second[0] == 'N')
+                nounPos.push_back(i);
+        }
+        if (nounPos.empty()) return;
+
+        std::uniform_int_distribution<size_t> pickPos(0, nounPos.size() - 1);
+        size_t idx = nounPos[pickPos(rng)];
+        const std::string& noun = sw[idx];
+
+        auto eit = classifier.getEmbeddings().find(noun);
+        if (eit == classifier.getEmbeddings().end()) return;
+
+        std::vector<std::pair<double, std::string>> candidates;
+        for (const auto& [adj, adjVec] : adjs->second) {
+            double sim = 0;
+            for (size_t d = 0; d < eit->second.size(); ++d)
+                sim += eit->second[d] * adjVec[d];
+            if (sim > 0.2) candidates.emplace_back(sim, adj);
+        }
+
+        if (candidates.empty()) return;
+        std::sort(candidates.begin(), candidates.end(),
+            [](const auto& a, const auto& b) { return a.first > b.first; });
+        size_t n = std::min<size_t>(5, candidates.size());
+        std::uniform_int_distribution<size_t> pick(0, n - 1);
+        sw.insert(sw.begin() + idx, candidates[pick(rng)].second);
+    }
+
+    void buildSwapCandidates() {
+        if (classifier.dimension() == 0) return;
+        std::cout << "  Building word swap index...\n";
+
+        std::vector<std::string> allLines;
+        for (const auto& [g, lines] : lore)
+            for (const auto& line : lines)
+                allLines.push_back(line);
+
+        auto tokens = tagger.tagLines(allLines);
+        size_t ti = 0;
+        for (const auto& line : allLines) {
+            auto lineWords = tokenize(line);
+            for (const auto& w : lineWords) {
+                if (ti < tokens.size() && classifier.hasEmbedding(w)) {
+                    auto it = posCache.find(w);
+                    if (it == posCache.end())
+                        posCache[w] = tokens[ti].pos;
+                }
+                ++ti;
+            }
+        }
+
+        const auto& emb = classifier.getEmbeddings();
+        std::vector<std::pair<std::string, std::vector<double>>> vocab;
+        for (const auto& [w, _] : emb) {
+            auto pit = posCache.find(w);
+            if (pit != posCache.end() && isContent(pit->second))
+                vocab.emplace_back(w, emb.at(w));
+        }
+
+        for (size_t i = 0; i < vocab.size(); ++i) {
+            const auto& [word, vec] = vocab[i];
+            const auto& pos = posCache[word];
+            std::vector<std::pair<double, std::string>> cands;
+            for (size_t j = 0; j < vocab.size(); ++j) {
+                if (i == j) continue;
+                if (pos[0] != posCache[vocab[j].first][0]) continue;
+                double sim = 0;
+                for (size_t d = 0; d < vec.size(); ++d)
+                    sim += vec[d] * vocab[j].second[d];
+                if (sim > 0.65) cands.emplace_back(sim, vocab[j].first);
+            }
+            std::sort(cands.begin(), cands.end(),
+                [](const auto& a, const auto& b) { return a.first > b.first; });
+            auto& s = swaps[word];
+            for (size_t k = 0; k < std::min<size_t>(6, cands.size()); ++k)
+                s.push_back(cands[k].second);
+        }
+        std::cout << "    " << swaps.size() << " words with swap candidates\n";
+
+        std::cout << "  Precomputing genre adjectives...\n";
+        for (const auto& [genre, lines] : lore) {
+            auto& adjList = genreAdjectives[genre];
+            std::unordered_set<std::string> seen;
+            for (const auto& line : lines) {
+                auto words = tokenize(line);
+                for (const auto& w : words) {
+                    auto pit = posCache.find(w);
+                    if (pit == posCache.end() || pit->second.size() < 2 || pit->second[0] != 'A') continue;
+                    if (seen.count(w)) continue;
+                    seen.insert(w);
+                    auto eit = emb.find(w);
+                    if (eit != emb.end()) adjList.emplace_back(w, eit->second);
+                }
+            }
+            std::cout << "    " << genre << ": " << adjList.size() << " adjectives\n";
+        }
+    }
+
+    static bool isContent(const std::string& pos) {
+        return pos.size() >= 2 && (pos[0] == 'N' || pos[0] == 'V' || pos[0] == 'A' || pos[0] == 'J');
+    }
+
+    static double cosineSim(const std::vector<double>& a, const std::vector<double>& b) {
+        double dot = 0.0;
+        for (size_t i = 0; i < a.size(); ++i) dot += a[i] * b[i];
+        return dot;
+    }
+
+    static bool isDangling(const std::string& w) {
+        return w == "the" || w == "a" || w == "an" || w == "of" || w == "in"
+            || w == "to" || w == "for" || w == "with" || w == "at" || w == "on"
+            || w == "by" || w == "from" || w == "into" || w == "through"
+            || w == "along" || w == "about" || w == "as" || w == "or"
+            || w == "and" || w == "but" || w == "if" || w == "then"
+            || w == "so" || w == "up" || w == "down" || w == "out"
+            || w == "over" || w == "under" || w == "again" || w == "further"
+            || w == "then" || w == "once" || w == "here" || w == "there"
+            || w == "when" || w == "where" || w == "why" || w == "how"
+            || w == "all" || w == "each" || w == "every" || w == "both"
+            || w == "few" || w == "some" || w == "any" || w == "only";
+    }
+
+    static std::vector<std::string> tokenize(const std::string& text) {
+        std::vector<std::string> words;
+        std::istringstream iss(text);
+        std::string w;
+        while (iss >> w) {
+            std::transform(w.begin(), w.end(), w.begin(), ::tolower);
+            while (!w.empty() && std::ispunct(static_cast<unsigned char>(w.front())))
+                w.erase(w.begin());
+            while (!w.empty() && std::ispunct(static_cast<unsigned char>(w.back())))
+                w.pop_back();
+            if (!w.empty())
+                words.push_back(w);
+        }
+        return words;
+    }
+
+    mutable std::unordered_map<std::string, std::string> posCache;
+};

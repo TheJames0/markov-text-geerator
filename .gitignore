@@ -1,0 +1,6 @@
+textgen
+udpipe
+models/
+glove.6B.*.txt
+*.zip
+*.o

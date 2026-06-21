@@ -1,0 +1,10 @@
+[Settlement] is a [Industry] colony in the [Region] system.
+[Settlement] was founded by [Faction] to harvest [Material] from the [Region] belt.
+The [Industry] platforms of [Settlement] orbit the gas giant of [Region].
+[Settlement] has operated for [Time] under the authority of [Faction]
+[Threat] threatens [Faction] holdings in the [Region] sector.
+The [Council] of [Settlement] monitors the [Material] shipments to [Faction].
+[Faction] scientists in [Settlement] study the [Art] of the [Region] anomaly.
+[Settlement] defense grid protects the [Industry] facilities from [Threat].
+Travel between [Settlement] and [Faction] space takes [Time] at light speed.
+The [Council] of [Settlement] declared martial law after the [Threat] incident.

@@ -1,0 +1,10 @@
+[Settlement] is a [Industry] town deep in [Region].
+[Settlement] processes [Material] to fuel the war efforts of [Faction].
+The [Industry] plants of [Settlement] run day and night for [Faction].
+[Settlement] has stood for [Time] as a center of [Industry] in [Region].
+[Title] of [Settlement] produces [Product] for [Faction] armies.
+Workers in [Settlement] mine [Resource] from the mountains of [Region].
+[Faction] relies on [Settlement] for [Material] and [Product].
+[Threat] has put [Settlement] on alert but [Industry] continues.
+The [Industry] halls of [Settlement] echo with the sound of [Product] production.
+[Settlement] ships [Product] across [Region] to support [Faction] campaigns.

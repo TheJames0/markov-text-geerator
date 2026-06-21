@@ -1,0 +1,14 @@
+Settlement = Ironforge, Ashwick, Steamhollow, Barrowgate, Deepmine, Furnacehold, Anvilgate
+Industry = mining, smelting, manufacturing, forging, refining, processing, production
+Material = steel, iron, coal, oil, copper, tin, brass
+Faction = the Northern Alliance, the Iron Empire, the Syndicate, the Free Cities, the Dominion
+Region = the Iron Hills, the Ashlands, the Steam Valley, the Black Mountains, the Mistwood, the Sunken Coast
+Title = the Grand Forge, the Iron Crown, the Assembly, the Foundry, the Workshop
+Time = centuries, generations, a millennia, decades, ages
+Product = weapons, machinery, tools, engines, rails, gears
+Resource = ore, coal, timber, stone, water, steam
+Threat = orc raids, border skirmishes, supply shortages, political instability, machine failures, the shadow, the creeping blight
+Setting = forest, mountain, valley, coastal, plains, river
+Council = High Council, Circle of Mages, Elders, Druid Circle, Arcane Order, Crown Council
+Art = magic, sorcery, druidry, alchemy, enchantment, divination
+Creature = dragons, griffins, unicorns, giants, elementals, phoenixes
