@@ -57,6 +57,22 @@ public:
         buildSwapCandidates();
     }
 
+    void loadBlueprint(const std::string& path) {
+        if (!fs::exists(path)) {
+            std::cout << "  No blueprint directory, skipping flow model\n";
+            return;
+        }
+        for (const auto& entry : fs::directory_iterator(path)) {
+            if (!entry.is_regular_file() || entry.path().extension() != ".txt") continue;
+            std::ifstream file(entry.path());
+            std::string line;
+            while (std::getline(file, line)) {
+                if (!line.empty()) blueprintChain.train(line);
+            }
+        }
+        std::cout << "  Loaded blueprint flow model\n";
+    }
+
     std::string generate(const std::string& genre, int wordCount,
                          double swapProb = 0.15) const {
         auto it = chains.find(genre);
@@ -68,7 +84,10 @@ public:
         int totalWords = 0;
         int targetWords = std::max(wordCount, 8);
 
-        while (totalWords < targetWords) {
+        int maxAttempts = std::max(200, targetWords * 30);
+        int attempts = 0;
+        while (totalWords < targetWords && attempts < maxAttempts) {
+            ++attempts;
             std::vector<std::string> sw;
             std::vector<std::string> orig;
             Prefix cur = it->second.randomStart();
@@ -110,7 +129,7 @@ public:
                 std::string origText = orig[0];
                 for (size_t oi = 1; oi < orig.size(); ++oi)
                     origText += " " + orig[oi];
-                if (sentencePerplexity(genre, origText) > 45.0) continue;
+                if (sentencePerplexity(genre, origText) > 60.0) continue;
             }
 
             {
@@ -138,6 +157,13 @@ public:
             }
 
             polishSentence(sw, genre);
+
+            {
+                std::string flowText = sw[0];
+                for (size_t fi = 1; fi < sw.size(); ++fi)
+                    flowText += " " + sw[fi];
+                if (combinedPerplexity(genre, flowText) > 55.0) continue;
+            }
 
             sw[0][0] = static_cast<char>(std::toupper(static_cast<unsigned char>(sw[0][0])));
             std::string sentence = sw[0];
@@ -176,6 +202,33 @@ public:
         return std::exp(-totalLogProb / count);
     }
 
+    double flowPerplexity(const std::string& text) const {
+        if (blueprintChain.empty()) return 50.0;
+        auto words = tokenize(text);
+        if (words.size() < 3) return 50.0;
+        double totalLogProb = 0.0;
+        int known = 0, unknown = 0;
+        for (size_t i = 2; i < words.size(); ++i) {
+            Prefix p{words[i-2], words[i-1]};
+            double prob = blueprintChain.wordProb(p, words[i]);
+            if (prob > 0.0) {
+                totalLogProb += std::log(prob);
+                ++known;
+            } else {
+                ++unknown;
+            }
+        }
+        if (known == 0) return 50.0;
+        double avgLogProb = (totalLogProb - unknown * 4.0) / (known + unknown);
+        return std::exp(-avgLogProb);
+    }
+
+    double combinedPerplexity(const std::string& genre, const std::string& text) const {
+        double cp = sentencePerplexity(genre, text);
+        double fp = flowPerplexity(text);
+        return CONTENT_WEIGHT * cp + FLOW_WEIGHT * fp;
+    }
+
     std::vector<std::pair<std::string, double>> classify(const std::string& text) const {
         return classifier.getScores(text);
     }
@@ -200,23 +253,49 @@ private:
     mutable std::mt19937 rng;
     bool addLore = true;
 
+    MarkovChain blueprintChain;
+    static constexpr double CONTENT_WEIGHT = 0.35;
+    static constexpr double FLOW_WEIGHT = 0.65;
+
     void polishSentence(std::vector<std::string>& sw, const std::string& genre) const {
         auto cit = chains.find(genre);
         if (cit == chains.end() || sw.size() < 3) return;
         const auto& chain = cit->second;
 
-        auto computePpl = [&](const std::vector<std::string>& w) -> double {
-            double total = 0;
+        auto computeCombinedPpl = [&](const std::vector<std::string>& w) -> double {
+            double contentTotal = 0;
             int cnt = 0;
             for (size_t i = 2; i < w.size(); ++i) {
-                total += chain.logProb(Prefix{w[i-2], w[i-1]}, w[i]);
+                contentTotal += chain.logProb(Prefix{w[i-2], w[i-1]}, w[i]);
                 ++cnt;
             }
-            return cnt > 0 ? std::exp(-total / cnt) : 100.0;
+            double cp = cnt > 0 ? std::exp(-contentTotal / cnt) : 100.0;
+
+            double fp = 50.0;
+            if (!blueprintChain.empty() && cnt > 0) {
+                double flowTotal = 0.0;
+                int flowKnown = 0, flowUnknown = 0;
+                for (size_t i = 2; i < w.size(); ++i) {
+                    Prefix pw{w[i-2], w[i-1]};
+                    double prob = blueprintChain.wordProb(pw, w[i]);
+                    if (prob > 0.0) {
+                        flowTotal += std::log(prob);
+                        ++flowKnown;
+                    } else {
+                        ++flowUnknown;
+                    }
+                }
+                if (flowKnown > 0) {
+                    double avgLP = (flowTotal - flowUnknown * 4.0) / (flowKnown + flowUnknown);
+                    fp = std::exp(-avgLP);
+                }
+            }
+
+            return CONTENT_WEIGHT * cp + FLOW_WEIGHT * fp;
         };
 
         for (int pass = 0; pass < 3; ++pass) {
-            double basePpl = computePpl(sw);
+            double basePpl = computeCombinedPpl(sw);
             bool improved = false;
 
             for (size_t i = 2; i < sw.size(); ++i) {
@@ -233,7 +312,7 @@ private:
                     if (cand == sw[i]) continue;
                     std::string orig = sw[i];
                     sw[i] = cand;
-                    double newPpl = computePpl(sw);
+                    double newPpl = computeCombinedPpl(sw);
                     if (newPpl < bestPpl * 0.99) {
                         bestPpl = newPpl;
                         bestWord = cand;

@@ -23,6 +23,7 @@ int main(int argc, char* argv[]) {
             dataDir = a;
     }
     gen.loadDataset(dataDir, embeddingsFile);
+    gen.loadBlueprint("blueprint");
 
     if (gen.empty()) {
         std::cerr << "No data loaded.\n";
