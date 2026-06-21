@@ -186,6 +186,7 @@ public:
         std::string result = sentences[0];
         for (size_t i = 1; i < sentences.size(); ++i)
             result += " " + sentences[i];
+        result = deduplicatePhrases(result);
         result = polishNouns(result, genre);
         // Only run WFC passes on shorter texts to avoid OOM
         size_t wc = 0;
@@ -334,9 +335,27 @@ private:
             if (cands.empty()) continue;
 
             std::vector<std::string> ok;
-            for (const auto& c : cands)
-                if (c.score < bestScore * 1.12)
+            std::vector<std::string> fresh;
+            for (const auto& c : cands) {
+                if (c.score < bestScore * 1.12) {
                     ok.push_back(c.text);
+                    // Prefer connectors not already used in the preceding text
+                    std::string conn = c.text;
+                    auto sp = conn.rfind(' ');
+                    if (sp != std::string::npos) conn = conn.substr(sp + 1);
+                    std::string connLower = conn;
+                    std::transform(connLower.begin(), connLower.end(), connLower.begin(), ::tolower);
+                    bool seen = false;
+                    for (size_t ci = 0; ci < si; ++ci) {
+                        if (sentences[ci].find(connLower) != std::string::npos
+                            || sentences[ci].find(conn) != std::string::npos) {
+                            seen = true; break;
+                        }
+                    }
+                    if (!seen) fresh.push_back(c.text);
+                }
+            }
+            if (!fresh.empty()) ok = fresh;
 
             std::uniform_int_distribution<size_t> pick(0, ok.size() - 1);
             sentences[si - 1] = ok[pick(rng)];
@@ -359,24 +378,24 @@ private:
 
     bool swapCreatesDoubleNoun(const std::vector<std::string>& words, size_t i,
                                const std::string& candFmt) const {
-        // Check if the swap would put two nouns adjacent
-        if (i > 0) {
-            std::string prev = wordLower(words[i - 1]);
-            std::string cand = wordLower(candFmt);
-            auto pp = posCache.find(prev);
-            auto cp = posCache.find(cand);
-            if (pp != posCache.end() && cp != posCache.end()
-                && isNounTag(pp->second) && isNounTag(cp->second))
-                return true;
-        }
-        if (i + 1 < words.size()) {
-            std::string cand = wordLower(candFmt);
-            std::string next = wordLower(words[i + 1]);
-            auto cp = posCache.find(cand);
-            auto np = posCache.find(next);
-            if (cp != posCache.end() && np != posCache.end()
-                && isNounTag(cp->second) && isNounTag(np->second))
-                return true;
+        static const std::unordered_set<std::string> SKIP_WORDS = {
+            "the", "a", "an", "this", "that", "these", "those",
+            "and", "but", "or", "nor", "yet", "so",
+            "very", "quite", "rather", "still", "just"
+        };
+        auto isNounSkip = [&](const std::string& w) -> bool {
+            std::string l = wordLower(w);
+            if (SKIP_WORDS.count(l)) return false;
+            auto pit = posCache.find(l);
+            return pit != posCache.end() && isNounTag(pit->second);
+        };
+        std::string cand = wordLower(candFmt);
+        if (!isNounSkip(cand)) return false;
+        for (int d = -2; d <= 2; d += 1) {
+            if (d == 0) continue;
+            int idx = static_cast<int>(i) + d;
+            if (idx < 0 || idx >= static_cast<int>(words.size())) continue;
+            if (isNounSkip(wordLower(words[static_cast<size_t>(idx)]))) return true;
         }
         return false;
     }
@@ -592,6 +611,47 @@ private:
         return makeText(words);
     }
 
+    std::string deduplicatePhrases(const std::string& text) const {
+        std::vector<std::string> words;
+        std::istringstream iss(text);
+        std::string w;
+        while (iss >> w) words.push_back(w);
+        if (words.size() < 8) return text;
+
+        auto key = [&](size_t i, size_t len) -> uint64_t {
+            uint64_t h = 0;
+            for (size_t k = 0; k < len && i + k < words.size(); ++k) {
+                std::string s = wordLower(words[i + k]);
+                for (char c : s) h = h * 31 + static_cast<uint64_t>(c);
+            }
+            return h;
+        };
+
+        for (int pass = 0; pass < 3; ++pass) {
+            bool changed = false;
+            for (size_t len = 6; len >= 4; --len) {
+                std::unordered_map<uint64_t, size_t> seen;
+                for (size_t i = 0; i + len <= words.size(); ++i) {
+                    uint64_t k = key(i, len);
+                    auto it = seen.find(k);
+                    if (it != seen.end()) {
+                        words.erase(words.begin() + i, words.begin() + i + len);
+                        changed = true;
+                        break;
+                    }
+                    seen[k] = i;
+                }
+                if (changed) break;
+            }
+            if (!changed) break;
+        }
+
+        std::string r = words[0];
+        for (size_t i = 1; i < words.size(); ++i)
+            r += " " + words[i];
+        return r;
+    }
+
     std::string fixCommonGrammar(const std::string& text) const {
         std::vector<std::string> words;
         std::istringstream iss(text);
@@ -720,9 +780,7 @@ private:
 
                 for (const auto& cand : sit->second) {
                     if (cand == sw[i]) continue;
-                    // Skip swap if it creates adjacent nouns
-                    if (i > 0 && isNounTag(posCache[sw[i-1]]) && isNounTag(posCache[cand])) continue;
-                    if (i + 1 < sw.size() && isNounTag(posCache[cand]) && isNounTag(posCache[sw[i+1]])) continue;
+                    if (swapCreatesDoubleNoun(sw, i, cand)) continue;
 
                     std::string orig = sw[i];
                     sw[i] = cand;
