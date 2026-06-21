@@ -184,6 +184,7 @@ public:
         std::string result = sentences[0];
         for (size_t i = 1; i < sentences.size(); ++i)
             result += " " + sentences[i];
+        result = polishNouns(result, genre);
         return result;
     }
 
@@ -328,6 +329,64 @@ private:
             sentences.erase(sentences.begin() + si);
             --si;
         }
+    }
+
+    std::string polishNouns(const std::string& text, const std::string& genre) const {
+        if (swaps.empty()) return text;
+        std::vector<std::string> words;
+        std::istringstream iss(text);
+        std::string w;
+        while (iss >> w) words.push_back(w);
+        if (words.size() < 5) return text;
+
+        for (int pass = 0; pass < 3; ++pass) {
+            bool changed = false;
+            for (size_t i = 0; i < words.size(); ++i) {
+                std::string clean = words[i];
+                std::transform(clean.begin(), clean.end(), clean.begin(), ::tolower);
+                while (!clean.empty() && std::ispunct(static_cast<unsigned char>(clean.back())))
+                    clean.pop_back();
+                if (clean.empty()) continue;
+
+                auto pit = posCache.find(clean);
+                if (pit == posCache.end() || pit->second.size() < 2 || pit->second[0] != 'N')
+                    continue;
+
+                auto sit = swaps.find(clean);
+                if (sit == swaps.end() || sit->second.empty()) continue;
+
+                double basePpl = combinedPerplexity(genre, text);
+                std::string bestWord = words[i];
+
+                for (const auto& cand : sit->second) {
+                    if (cand == clean) continue;
+                    std::string candFmt = cand;
+                    if (std::isupper(static_cast<unsigned char>(words[i][0])))
+                        candFmt[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(cand[0])));
+
+                    std::string modified = words[0];
+                    for (size_t j = 1; j < words.size(); ++j)
+                        modified += " " + (j == i ? candFmt : words[j]);
+
+                    double newPpl = combinedPerplexity(genre, modified);
+                    if (newPpl < basePpl * 0.995) {
+                        basePpl = newPpl;
+                        bestWord = candFmt;
+                    }
+                }
+
+                if (bestWord != words[i]) {
+                    words[i] = bestWord;
+                    changed = true;
+                }
+            }
+            if (!changed) break;
+        }
+
+        std::string result = words[0];
+        for (size_t i = 1; i < words.size(); ++i)
+            result += " " + words[i];
+        return result;
     }
 
     void polishSentence(std::vector<std::string>& sw, const std::string& genre) const {
