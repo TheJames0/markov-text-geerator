@@ -120,6 +120,37 @@ public:
     }
     bool hasEmbedding(const std::string& word) const { return embeddings.count(word) > 0; }
 
+    std::string wordGenre(const std::string& word) const {
+        auto eit = embeddings.find(word);
+        if (eit == embeddings.end() || dim == 0 || genres.empty()) return "";
+        double bestSim = -1.0;
+        std::string bestGenre;
+        for (const auto& g : genres) {
+            auto cit = genreCentroids.find(g);
+            if (cit == genreCentroids.end()) continue;
+            double sim = 0.0;
+            for (size_t i = 0; i < dim; ++i)
+                sim += eit->second[i] * cit->second[i];
+            if (sim > bestSim) { bestSim = sim; bestGenre = g; }
+        }
+        return bestGenre;
+    }
+
+    double coherenceScore(const std::string& text, const std::string& targetGenre) const {
+        auto words = tokenize(text);
+        if (words.empty() || dim == 0) return 0.0;
+        int relevant = 0, matching = 0;
+        for (const auto& w : words) {
+            auto eit = embeddings.find(w);
+            if (eit == embeddings.end()) continue;
+            std::string bestG = wordGenre(w);
+            if (bestG.empty()) continue;
+            ++relevant;
+            if (bestG == targetGenre) ++matching;
+        }
+        return relevant > 0 ? (double)matching / relevant : 0.0;
+    }
+
 private:
     std::vector<std::string> genres;
     std::unordered_map<std::string, std::vector<double>> embeddings;

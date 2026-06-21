@@ -141,6 +141,7 @@ public:
                 for (const auto& [g, s] : scores)
                     if (g == genre && s > 0) { genreMatch = true; break; }
                 if (!genreMatch) continue;
+                if (classifier.coherenceScore(checkText, genre) < 0.22) continue;
             }
 
             if (roll(rng) < 0.5) enhanceDescriptive(sw, genre);
@@ -163,6 +164,7 @@ public:
                 for (size_t fi = 1; fi < sw.size(); ++fi)
                     flowText += " " + sw[fi];
                 if (combinedPerplexity(genre, flowText) > 55.0) continue;
+                if (classifier.coherenceScore(flowText, genre) < 0.14) continue;
             }
 
             sw[0][0] = static_cast<char>(std::toupper(static_cast<unsigned char>(sw[0][0])));
