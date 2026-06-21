@@ -5,3 +5,4 @@ glove.6B.*.txt
 *.zip
 *.o
 *.d
+textgen_dbg
