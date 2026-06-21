@@ -11,3 +11,8 @@ skill: strength, agility, endurance, intelligence, wisdom, charisma, dexterity, 
 belief: honor, power, knowledge, freedom, order, chaos, balance, destruction, creation, survival, glory, wisdom, justice, vengeance, peace, unity
 environment: deep forests, dark caves, icy peaks, scorching deserts, murky swamps, ancient ruins, crystal mines, volcanic caves, frozen tundras, coral reefs, floating islands, underground rivers, misty valleys, thorn thickets, ash fields
 movementstyle: slithering, crawling, bounding, galloping, flying, swimming, burrowing, climbing, hopping, gliding, striding, prowling, stalking, charging, drifting, leaping
+weaponfeature: serrated edge, blood groove, reinforced crossguard, segmented blade, hollow core, double edge, curved spine, flared muzzle, vented barrel, weighted pommel, wrapped grip, ring pommel, finger grooves, thumb rest, trigger guard, blast shield, sight groove, recoil spring, loading gate, cylinder gap
+sound: deep boom, sharp crack, ringing hum, low hiss, thunderous roar, piercing whine, hollow thud, sizzling pop, metallic screech, resonant gong, whispering sigh, grinding rumble, sharp report, muffled blast, echoing clang
+color: crimson, azure, obsidian, ivory, amber, jade, silver, bronze, copper, gold, pearl, onyx, ruby, sapphire, emerald, amethyst, topaz, garnet, coral, jet
+adjective: sleek, brutal, elegant, crude, ornate, simple, massive, slender, curved, straight, jagged, smooth, twisted, forged, folded, etched, gilded, spiked, serrated, reinforced
+number: two, three, four, five, six, seven, eight, nine, ten, twelve, fifteen, twenty, thirty, fifty, hundred

@@ -66,7 +66,13 @@ int main(int argc, char* argv[]) {
             {"skill", "skill"}, {"skills", "skill"},
             {"belief", "belief"}, {"beliefs", "belief"},
             {"environment", "environment"}, {"env", "environment"},
-            {"movementstyle", "movementstyle"}, {"movement", "movementstyle"}
+            {"movementstyle", "movementstyle"}, {"movement", "movementstyle"},
+            {"weaponfeature", "weaponfeature"}, {"wfeature", "weaponfeature"},
+            {"color", "color"}, {"col", "color"},
+            {"sound", "sound"}, {"snd", "sound"},
+            {"adjective", "adjective"}, {"adj", "adjective"},
+            {"number", "number"}, {"num", "number"},
+            {"weapontype", "weapontype"}, {"wtype", "weapontype"}
         };
         std::cout << "Tags (or none): ";
         std::string tagLine;

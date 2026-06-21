@@ -101,25 +101,32 @@ public:
     void loadTemplates(const std::string& path) {
         if (!fs::exists(path)) { std::cout << "  No templates directory\n"; return; }
         size_t trained = 0;
-        MarkovChain lc;
-        std::vector<std::string> loreLines;
+        MarkovChain combined;
+        std::vector<std::string> combinedLines;
         for (const auto& entry : fs::directory_iterator(path)) {
             if (!entry.is_regular_file() || entry.path().extension() != ".txt") continue;
+            std::string gname = entry.path().stem().string();
             std::ifstream file(entry.path());
             std::string line;
+            MarkovChain sub;
+            std::vector<std::string> subLines;
             while (std::getline(file, line)) {
                 if (line.empty()) continue;
                 blueprintChain.train(line);
-                lc.train(line);
-                loreLines.push_back(line);
+                combined.train(line);
+                combinedLines.push_back(line);
+                sub.train(line);
+                subLines.push_back(line);
                 ++trained;
             }
+            chains[gname] = std::move(sub);
+            classifier.loadGenre(gname, subLines);
+            std::cout << "    '" << gname << "': " << subLines.size() << " lines\n";
         }
-        chains["lore"] = std::move(lc);
-        loreChain = chains["lore"];
-        classifier.loadGenre("lore", loreLines);
+        chains["lore"] = std::move(combined);
+        classifier.loadGenre("lore", combinedLines);
         loreChainTrained = true;
-        std::cout << "  Loaded " << trained << " template lines into 'lore' genre\n";
+        std::cout << "  Loaded " << trained << " template lines across genres\n";
     }
 
     std::string generate(const std::string& genre, int wordCount,
