@@ -266,8 +266,21 @@ private:
 
     void joinSentences(std::vector<std::string>& sentences, const std::string& genre) const {
         if (sentences.size() < 2) return;
-        static const std::vector<std::string> CONNECTIVES = {
-            "where", "which", "while", "when", "as"
+
+        struct Pattern {
+            const char* str;
+            bool prefix;
+        };
+
+        static const Pattern PATTERNS[] = {
+            {" where ", false}, {" which ", false}, {" while ", false}, {" when ", false},
+            {" as ", false}, {" until ", false}, {" though ", false},
+            {", where ", false}, {", which ", false}, {", while ", false}, {", when ", false},
+            {", as ", false}, {", until ", false}, {", though ", false},
+            {", and ", false}, {", but ", false}, {", so ", false}, {", yet ", false},
+            {"While ", true}, {"When ", true}, {"As ", true}, {"Although ", true},
+            {"Because ", true}, {"Though ", true}, {"After ", true}, {"Before ", true},
+            {"Until ", true},
         };
 
         for (size_t si = 1; si < sentences.size(); ++si) {
@@ -281,23 +294,39 @@ private:
             if (!lowerCurr.empty())
                 lowerCurr[0] = static_cast<char>(std::tolower(static_cast<unsigned char>(lowerCurr[0])));
 
-            std::string bestJoined;
+            struct Candidate {
+                std::string text;
+                double score;
+            };
+            std::vector<Candidate> cands;
             double bestScore = std::numeric_limits<double>::max();
 
-            for (const auto& conn : CONNECTIVES) {
-                std::string joined = base + " " + conn + " " + lowerCurr;
-                double score = combinedPerplexity(genre, joined);
-                if (score < bestScore) {
-                    bestScore = score;
-                    bestJoined = joined;
+            for (const auto& p : PATTERNS) {
+                std::string joined;
+                if (p.prefix) {
+                    std::string lowerBase = base;
+                    if (!lowerBase.empty())
+                        lowerBase[0] = static_cast<char>(std::tolower(static_cast<unsigned char>(lowerBase[0])));
+                    joined = std::string(p.str) + lowerBase + ", " + curr;
+                } else {
+                    joined = base + std::string(p.str) + lowerCurr;
                 }
+                double score = combinedPerplexity(genre, joined);
+                if (score < bestScore) bestScore = score;
+                if (score < 60.0) cands.push_back({joined, score});
             }
 
-            if (bestScore < 60.0) {
-                sentences[si - 1] = bestJoined;
-                sentences.erase(sentences.begin() + si);
-                --si;
-            }
+            if (cands.empty()) continue;
+
+            std::vector<std::string> ok;
+            for (const auto& c : cands)
+                if (c.score < bestScore * 1.12)
+                    ok.push_back(c.text);
+
+            std::uniform_int_distribution<size_t> pick(0, ok.size() - 1);
+            sentences[si - 1] = ok[pick(rng)];
+            sentences.erase(sentences.begin() + si);
+            --si;
         }
     }
 
