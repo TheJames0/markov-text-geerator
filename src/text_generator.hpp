@@ -794,6 +794,15 @@ private:
             return r;
         };
 
+        auto makeText = [&](const std::vector<std::string>& wrds) -> std::string {
+            if (wrds.empty()) return "";
+            std::string r = wrds[0];
+            for (size_t k = 1; k < wrds.size(); ++k) r += " " + wrds[k];
+            return r;
+        };
+
+        std::unordered_set<std::string> usedTags;
+
         for (size_t i = 0; i < words.size(); ++i) {
             std::string wd = words[i];
             if (wd.size() < 4) continue;
@@ -804,10 +813,10 @@ private:
                 cat.pop_back();
             std::transform(cat.begin(), cat.end(), cat.begin(), ::tolower);
 
-            // Check if an entity tag overrides this placeholder
             auto tagIt = entityTags.find(cat);
             if (tagIt != entityTags.end()) {
                 words[i] = tagIt->second;
+                usedTags.insert(cat);
                 continue;
             }
 
@@ -825,6 +834,40 @@ private:
                 }
             }
             words[i] = bestName;
+        }
+
+        // Insert unused tags into best position using perplexity
+        for (const auto& [cat, name] : entityTags) {
+            if (usedTags.count(cat)) continue;
+            double basePpl = combinedPerplexity(genre, makeText(words));
+            size_t bestPos = words.size();
+            double bestScore = basePpl;
+            for (size_t pos = 0; pos <= words.size(); ++pos) {
+                std::string lower = wordLower(name);
+                if (pos > 0 && wordLower(words[pos - 1]).back() == '.') continue;
+                if (pos < words.size()) {
+                    std::string nx = wordLower(words[pos]);
+                    if (nx == "the" || nx == "a" || nx == "an") continue;
+                }
+                // Skip if adjacent to same category words (avoid duplication)
+                bool skip = false;
+                for (int d = -1; d <= 0; ++d) {
+                    int idx = static_cast<int>(pos) + d;
+                    if (idx >= 0 && idx < static_cast<int>(words.size())) {
+                        std::string w = wordLower(words[idx]);
+                        if (w == lower) { skip = true; break; }
+                    }
+                }
+                if (skip) continue;
+
+                words.insert(words.begin() + pos, name);
+                double ppl = combinedPerplexity(genre, makeText(words));
+                if (ppl < bestScore) { bestScore = ppl; bestPos = pos; }
+                words.erase(words.begin() + pos);
+            }
+            if (bestScore < basePpl * 1.06 && bestPos <= words.size()) {
+                words.insert(words.begin() + bestPos, name);
+            }
         }
 
         std::string r = words[0];
