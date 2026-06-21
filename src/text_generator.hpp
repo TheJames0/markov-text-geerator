@@ -196,6 +196,7 @@ public:
             result = wfcExpand(result, genre);
             result = wfcDelete(result, genre);
         }
+        result = fixCommonGrammar(result);
         return result;
     }
 
@@ -484,7 +485,11 @@ private:
                 auto pRight = posCache.find(right);
                 bool rightIsNoun = pRight != posCache.end() && isNounTag(pRight->second);
 
-                if (rightIsNoun) {
+                auto pLeft = posCache.find(left);
+                bool leftIsNoun = pLeft != posCache.end() && isNounTag(pLeft->second);
+                bool leftIsVerb = pLeft != posCache.end() && pLeft->second[0] == 'V';
+
+                if (rightIsNoun && !leftIsNoun) {
                     static const char* DETS[] = {"the", "a", "this", "no"};
                     for (auto d : DETS) {
                         words.insert(words.begin() + i + 1, d);
@@ -494,21 +499,23 @@ private:
                     }
                 }
 
-                auto pLeft = posCache.find(left);
-                if (pLeft != posCache.end() && pLeft->second[0] == 'V' && rightIsNoun) {
-                    static const char* PREPS[] = {"in", "on", "to", "from", "with", "by", "for", "of"};
-                    for (auto p : PREPS) {
-                        words.insert(words.begin() + i + 1, p);
-                        double ppl = combinedPerplexity(genre, windowText(words, i + 1, 4));
-                        if (ppl < bestPpl * 0.96) { bestPpl = ppl; best = p; }
-                        words.erase(words.begin() + i + 1);
+                if (leftIsVerb && rightIsNoun) {
+                    auto cit = chains.find(genre);
+                    bool knownDirect = cit != chains.end()
+                        && cit->second.hasPrefix(Prefix{left, right});
+                    if (!knownDirect) {
+                        static const char* PREPS[] = {"in", "on", "to", "from", "with", "by", "for", "of"};
+                        for (auto p : PREPS) {
+                            words.insert(words.begin() + i + 1, p);
+                            double ppl = combinedPerplexity(genre, windowText(words, i + 1, 4));
+                            if (ppl < bestPpl * 0.96) { bestPpl = ppl; best = p; }
+                            words.erase(words.begin() + i + 1);
+                        }
                     }
                 }
 
-                bool leftIsNoun = pLeft != posCache.end() && isNounTag(pLeft->second);
-                if ((leftIsNoun && rightIsNoun) ||
-                    (pLeft != posCache.end() && pLeft->second[0] == 'V'
-                     && pRight != posCache.end() && pRight->second[0] == 'V')) {
+                bool rightIsVerb = pRight != posCache.end() && pRight->second[0] == 'V';
+                if ((leftIsNoun && rightIsNoun) || (leftIsVerb && rightIsVerb)) {
                     static const char* CONJS[] = {"and", "but", "or"};
                     for (auto c : CONJS) {
                         words.insert(words.begin() + i + 1, c);
@@ -581,6 +588,72 @@ private:
         }
 
         return makeText(words);
+    }
+
+    std::string fixCommonGrammar(const std::string& text) const {
+        std::vector<std::string> words;
+        std::istringstream iss(text);
+        std::string w;
+        while (iss >> w) words.push_back(w);
+        if (words.size() < 2) return text;
+
+        static const std::unordered_set<std::string> MODALS = {
+            "could", "would", "should", "might", "may", "can", "will", "shall"
+        };
+
+        static const std::unordered_set<std::string> A_WORDS = {
+            "university", "unicorn", "unified", "union", "unique",
+            "united", "universe", "universal", "usual", "eulogy",
+            "euphemism", "european", "eucalyptus", "one"
+        };
+        static const std::unordered_set<std::string> AN_WORDS = {
+            "hour", "honest", "honor", "heir", "herb"
+        };
+
+        auto isVowelSound = [&](const std::string& w) -> bool {
+            if (AN_WORDS.count(w)) return true;
+            if (A_WORDS.count(w)) return false;
+            if (w.empty()) return false;
+            char f = static_cast<char>(std::tolower(static_cast<unsigned char>(w[0])));
+            return f == 'a' || f == 'e' || f == 'i' || f == 'o' || f == 'u';
+        };
+
+        for (size_t i = 0; i + 1 < words.size(); ++i) {
+            std::string cur = wordLower(words[i]);
+            std::string nxt = wordLower(words[i + 1]);
+
+            if (cur == "a" && isVowelSound(nxt)) {
+                words[i] = "an";
+                size_t pos = words[i].find_first_not_of(" \t");
+                if (pos != std::string::npos && std::isupper(static_cast<unsigned char>(words[i + 1][0])))
+                    words[i][pos] = 'A';
+            }
+            if (cur == "an" && !isVowelSound(nxt)) {
+                words[i] = "a";
+                if (std::isupper(static_cast<unsigned char>(words[i + 1][0])))
+                    words[i][0] = 'A';
+            }
+
+            if (MODALS.count(cur) && nxt.size() >= 2 && nxt.back() == 'd'
+                && i + 2 < words.size() && wordLower(words[i + 2]) != "be") {
+                std::string base;
+                if (nxt.size() >= 3 && nxt.substr(nxt.size() - 3) == "ied")
+                    base = nxt.substr(0, nxt.size() - 3) + "y";
+                else if (nxt.size() >= 2 && nxt.substr(nxt.size() - 2) == "ed")
+                    base = nxt.substr(0, nxt.size() - 2);
+                if (!base.empty() && base.size() >= 2) {
+                    std::string fixed = base;
+                    if (!words[i + 1].empty() && std::isupper(static_cast<unsigned char>(words[i + 1][0])))
+                        fixed[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(fixed[0])));
+                    words[i + 1] = fixed;
+                }
+            }
+        }
+
+        std::string r = words[0];
+        for (size_t i = 1; i < words.size(); ++i)
+            r += " " + words[i];
+        return r;
     }
 
     void polishSentence(std::vector<std::string>& sw, const std::string& genre) const {
