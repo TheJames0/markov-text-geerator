@@ -36,6 +36,8 @@ public:
 
         for (const auto& entry : fs::directory_iterator(dataDir)) {
             if (!entry.is_regular_file() || entry.path().extension() != ".txt") continue;
+            std::string fname = entry.path().filename().string();
+            if (fname == "names.txt") continue;
 
             std::string genre = entry.path().stem().string();
             std::ifstream file(entry.path());
@@ -71,6 +73,53 @@ public:
             }
         }
         std::cout << "  Loaded blueprint flow model\n";
+    }
+
+    void loadNames(const std::string& path) {
+        std::ifstream file(path);
+        if (!file.is_open()) { std::cout << "  Warning: no names file\n"; return; }
+        std::string line;
+        while (std::getline(file, line)) {
+            auto col = line.find(':');
+            if (col == std::string::npos) continue;
+            std::string cat = line.substr(0, col);
+            std::transform(cat.begin(), cat.end(), cat.begin(), ::tolower);
+            std::string rest = line.substr(col + 1);
+            std::istringstream iss(rest);
+            std::string name;
+            while (std::getline(iss, name, ',')) {
+                while (!name.empty() && name[0] == ' ') name.erase(name.begin());
+                while (!name.empty() && name.back() == ' ') name.pop_back();
+                if (!name.empty()) nameRegistry[cat].push_back(name);
+            }
+        }
+        std::cout << "  Loaded " << nameRegistry.size() << " name categories\n";
+        for (const auto& [c, v] : nameRegistry)
+            std::cout << "    " << c << ": " << v.size() << " names\n";
+    }
+
+    void loadTemplates(const std::string& path) {
+        if (!fs::exists(path)) { std::cout << "  No templates directory\n"; return; }
+        size_t trained = 0;
+        MarkovChain lc;
+        std::vector<std::string> loreLines;
+        for (const auto& entry : fs::directory_iterator(path)) {
+            if (!entry.is_regular_file() || entry.path().extension() != ".txt") continue;
+            std::ifstream file(entry.path());
+            std::string line;
+            while (std::getline(file, line)) {
+                if (line.empty()) continue;
+                blueprintChain.train(line);
+                lc.train(line);
+                loreLines.push_back(line);
+                ++trained;
+            }
+        }
+        chains["lore"] = std::move(lc);
+        loreChain = chains["lore"];
+        classifier.loadGenre("lore", loreLines);
+        loreChainTrained = true;
+        std::cout << "  Loaded " << trained << " template lines into 'lore' genre\n";
     }
 
     std::string generate(const std::string& genre, int wordCount,
@@ -141,7 +190,7 @@ public:
                 for (const auto& [g, s] : scores)
                     if (g == genre && s > 0) { genreMatch = true; break; }
                 if (!genreMatch) continue;
-                if (classifier.coherenceScore(checkText, genre) < 0.22) continue;
+                if (classifier.coherenceScore(checkText, genre) < 0.05) continue;
             }
 
             if (roll(rng) < 0.5) enhanceDescriptive(sw, genre);
@@ -164,7 +213,7 @@ public:
                 for (size_t fi = 1; fi < sw.size(); ++fi)
                     flowText += " " + sw[fi];
                 if (combinedPerplexity(genre, flowText) > 55.0) continue;
-                if (classifier.coherenceScore(flowText, genre) < 0.14) continue;
+                if (classifier.coherenceScore(flowText, genre) < 0.03) continue;
             }
 
             sw[0][0] = static_cast<char>(std::toupper(static_cast<unsigned char>(sw[0][0])));
@@ -200,6 +249,7 @@ public:
             result = wfcDelete(result, genre);
         }
         result = fixCommonGrammar(result);
+        result = replacePlaceholders(result, genre);
         return result;
     }
 
@@ -277,8 +327,12 @@ private:
     bool addLore = true;
 
     MarkovChain blueprintChain;
+    MarkovChain loreChain;
+    bool loreChainTrained = false;
     static constexpr double CONTENT_WEIGHT = 0.35;
     static constexpr double FLOW_WEIGHT = 0.65;
+
+    std::unordered_map<std::string, std::vector<std::string>> nameRegistry;
 
     void joinSentences(std::vector<std::string>& sentences, const std::string& genre) const {
         if (sentences.size() < 2) return;
@@ -710,6 +764,56 @@ private:
                     words[i + 1] = fixed;
                 }
             }
+        }
+
+        std::string r = words[0];
+        for (size_t i = 1; i < words.size(); ++i)
+            r += " " + words[i];
+        return r;
+    }
+
+    std::string replacePlaceholders(const std::string& text, const std::string& genre) const {
+        if (nameRegistry.empty()) return text;
+        std::vector<std::string> words;
+        std::istringstream iss(text);
+        std::string w;
+        while (iss >> w) words.push_back(w);
+        if (words.empty()) return text;
+
+        auto windowText = [&](const std::vector<std::string>& wrds,
+                              size_t center, int radius) -> std::string {
+            int start = static_cast<int>(center) - radius;
+            if (start < 0) start = 0;
+            size_t end = std::min(center + static_cast<size_t>(radius), wrds.size() - 1);
+            if (start > static_cast<int>(end)) return "";
+            std::string r = wrds[start];
+            for (int k = start + 1; k <= static_cast<int>(end); ++k)
+                r += " " + wrds[k];
+            return r;
+        };
+
+        for (size_t i = 0; i < words.size(); ++i) {
+            std::string wd = words[i];
+            if (wd.size() < 4 || wd[0] != 'z' || wd[1] != 'z') continue;
+            std::string cat = wd.substr(2);
+            while (!cat.empty() && std::ispunct(static_cast<unsigned char>(cat.back())))
+                cat.pop_back();
+            std::transform(cat.begin(), cat.end(), cat.begin(), ::tolower);
+            auto it = nameRegistry.find(cat);
+            if (it == nameRegistry.end()) continue;
+            if (it == nameRegistry.end() || it->second.empty()) continue;
+
+            std::string bestName = it->second.front();
+            double bestScore = std::numeric_limits<double>::max();
+            for (const auto& name : it->second) {
+                words[i] = name;
+                double score = combinedPerplexity(genre, windowText(words, i, 4));
+                if (score < bestScore) {
+                    bestScore = score;
+                    bestName = name;
+                }
+            }
+            words[i] = bestName;
         }
 
         std::string r = words[0];

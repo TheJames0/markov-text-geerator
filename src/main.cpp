@@ -24,6 +24,8 @@ int main(int argc, char* argv[]) {
     }
     gen.loadDataset(dataDir, embeddingsFile);
     gen.loadBlueprint("blueprint");
+    gen.loadNames("data/names.txt");
+    gen.loadTemplates("data/templates");
 
     if (gen.empty()) {
         std::cerr << "No data loaded.\n";
