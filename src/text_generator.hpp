@@ -185,7 +185,17 @@ public:
         for (size_t i = 1; i < sentences.size(); ++i)
             result += " " + sentences[i];
         result = polishNouns(result, genre);
-        result = wfcExpand(result, genre);
+        // Only run WFC passes on shorter texts to avoid OOM
+        size_t wc = 0;
+        {
+            std::istringstream cnt(result);
+            std::string _;
+            while (cnt >> _) ++wc;
+        }
+        if (wc >= 8 && wc <= 35) {
+            result = wfcExpand(result, genre);
+            result = wfcDelete(result, genre);
+        }
         return result;
     }
 
@@ -429,7 +439,7 @@ private:
         std::istringstream iss(text);
         std::string w;
         while (iss >> w) words.push_back(w);
-        if (words.size() < 4) return text;
+        if (words.size() < 4 || words.size() > 50) return text;
 
         auto windowText = [&](const std::vector<std::string>& wrds,
                               size_t center, int radius) -> std::string {
@@ -448,7 +458,7 @@ private:
             "and", "but", "or", "yet", "so", "nor", "for",
             "although", "though", "because", "since", "while", "when",
             "whenever", "wherever", "whereas", "unless", "until", "after",
-            "before", "once", "if", "whether", "as"
+            "before", "once", "if", "whether"
         };
         auto skipAt = [&](size_t i) -> bool {
             std::string lc = wordLower(words[i]);
@@ -458,59 +468,51 @@ private:
             return false;
         };
 
-        for (int pass = 0; pass < 3; ++pass) {
+        size_t totalInserted = 0;
+        for (int pass = 0; pass < 3 && totalInserted < 12; ++pass) {
             bool changed = false;
-            for (size_t i = 0; i + 1 < words.size(); ++i) {
+            for (size_t i = 0; i + 1 < words.size() && words.size() < 80; ++i) {
                 if (skipAt(i) || skipAt(i + 1)) continue;
 
                 double basePpl = combinedPerplexity(genre,
                     windowText(words, i, 4));
 
-                // Try determiners after words that need them
                 std::string best;
                 double bestPpl = basePpl;
                 std::string left = wordLower(words[i]);
                 std::string right = wordLower(words[i + 1]);
+                auto pRight = posCache.find(right);
+                bool rightIsNoun = pRight != posCache.end() && isNounTag(pRight->second);
 
-                auto pIt = posCache.find(right);
-                if (pIt != posCache.end() && isNounTag(pIt->second)) {
-                    static const char* DETS[] = {"the", "a", "an", "this", "that", "no"};
+                if (rightIsNoun) {
+                    static const char* DETS[] = {"the", "a", "this", "no"};
                     for (auto d : DETS) {
                         words.insert(words.begin() + i + 1, d);
-                        double ppl = combinedPerplexity(genre,
-                            windowText(words, i + 1, 4));
+                        double ppl = combinedPerplexity(genre, windowText(words, i + 1, 4));
                         if (ppl < bestPpl * 0.96) { bestPpl = ppl; best = d; }
                         words.erase(words.begin() + i + 1);
                     }
                 }
 
-                // Try prepositions after verbs before nouns
                 auto pLeft = posCache.find(left);
-                if (pLeft != posCache.end() && pLeft->second[0] == 'V'
-                    && pIt != posCache.end() && isNounTag(pIt->second)) {
-                    static const char* PREPS[] = {"in", "on", "at", "over", "into",
-                        "through", "across", "from", "with", "by", "for", "of", "to",
-                        "toward", "under", "beneath", "behind", "beyond", "between"};
+                if (pLeft != posCache.end() && pLeft->second[0] == 'V' && rightIsNoun) {
+                    static const char* PREPS[] = {"in", "on", "to", "from", "with", "by", "for", "of"};
                     for (auto p : PREPS) {
                         words.insert(words.begin() + i + 1, p);
-                        double ppl = combinedPerplexity(genre,
-                            windowText(words, i + 1, 4));
+                        double ppl = combinedPerplexity(genre, windowText(words, i + 1, 4));
                         if (ppl < bestPpl * 0.96) { bestPpl = ppl; best = p; }
                         words.erase(words.begin() + i + 1);
                     }
                 }
 
-                // Try conjunctions between nouns or verbs
-                bool nounNoun = pLeft != posCache.end() && isNounTag(pLeft->second)
-                    && pIt != posCache.end() && isNounTag(pIt->second);
-                bool verbVerb = pLeft != posCache.end() && pLeft->second[0] == 'V'
-                    && pIt != posCache.end() && pIt->second[0] == 'V';
-                if (nounNoun || verbVerb) {
-                    static const char* CONJS[] = {"and", "but", "or", "yet", "so"};
+                bool leftIsNoun = pLeft != posCache.end() && isNounTag(pLeft->second);
+                if ((leftIsNoun && rightIsNoun) ||
+                    (pLeft != posCache.end() && pLeft->second[0] == 'V'
+                     && pRight != posCache.end() && pRight->second[0] == 'V')) {
+                    static const char* CONJS[] = {"and", "but", "or"};
                     for (auto c : CONJS) {
                         words.insert(words.begin() + i + 1, c);
-                        double ppl = combinedPerplexity(genre,
-                            windowText(words, i + 1, 4));
+                        double ppl = combinedPerplexity(genre, windowText(words, i + 1, 4));
                         if (ppl < bestPpl * 0.96) { bestPpl = ppl; best = c; }
                         words.erase(words.begin() + i + 1);
                     }
@@ -519,6 +521,7 @@ private:
                 if (!best.empty()) {
                     words.insert(words.begin() + i + 1, best);
                     changed = true;
+                    ++totalInserted;
                     ++i;
                 }
             }
@@ -529,6 +532,55 @@ private:
         for (size_t i = 1; i < words.size(); ++i)
             result += " " + words[i];
         return result;
+    }
+
+    std::string wfcDelete(const std::string& text, const std::string& genre) const {
+        std::vector<std::string> words;
+        std::istringstream iss(text);
+        std::string w;
+        while (iss >> w) words.push_back(w);
+        if (words.size() < 4 || words.size() > 60) return text;
+
+        auto makeText = [&](const std::vector<std::string>& w) -> std::string {
+            if (w.empty()) return "";
+            std::string r = w[0];
+            for (size_t k = 1; k < w.size(); ++k) r += " " + w[k];
+            return r;
+        };
+
+        for (int pass = 0; pass < 3 && words.size() >= 6; ++pass) {
+            double baseline = combinedPerplexity(genre, makeText(words));
+            std::vector<std::pair<size_t, double>> scores;
+            for (size_t i = 0; i < words.size(); ++i) {
+                std::string clean = wordLower(words[i]);
+                if (clean.empty() || clean.back() == '.') continue;
+                if (i > 0 && wordLower(words[i - 1]).back() == '.') continue;
+                std::string saved = words[i];
+                words.erase(words.begin() + i);
+                double ppl = combinedPerplexity(genre, makeText(words));
+                words.insert(words.begin() + i, saved);
+                if (ppl < baseline) scores.push_back({i, ppl});
+            }
+
+            if (scores.empty()) break;
+
+            std::sort(scores.begin(), scores.end(),
+                [](const auto& a, const auto& b) { return a.second < b.second; });
+
+            size_t maxDel = words.size() / 8 + 1;
+            size_t deleted = 0;
+            for (const auto& s : scores) {
+                if (deleted >= maxDel) break;
+                size_t idx = s.first - deleted;
+                std::string cln = wordLower(words[idx]);
+                if (cln == "the" || cln == "a" || cln == "an" || cln == "this" || cln == "that") continue;
+                words.erase(words.begin() + idx);
+                ++deleted;
+            }
+            if (deleted == 0) break;
+        }
+
+        return makeText(words);
     }
 
     void polishSentence(std::vector<std::string>& sw, const std::string& genre) const {
