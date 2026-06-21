@@ -1,5 +1,5 @@
 CXX := g++
-CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -Isrc
+CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -Isrc -MMD
 LDFLAGS :=
 TARGET := textgen
 UDPIPE_BIN := udpipe
@@ -24,8 +24,10 @@ MODEL_URL := https://lindat.mff.cuni.cz/repository/server/api/core/bitstreams/8d
 
 all: $(TARGET)
 
-$(TARGET): src/main.cpp
+$(TARGET): src/main.cpp $(wildcard src/*.hpp)
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)
+
+-include $(wildcard src/*.d)
 
 embeddings: $(EMBEDDINGS_FILE)
 

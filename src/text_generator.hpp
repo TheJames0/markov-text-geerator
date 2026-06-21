@@ -179,6 +179,8 @@ public:
         }
 
         if (sentences.empty()) return "";
+        joinSentences(sentences, genre);
+
         std::string result = sentences[0];
         for (size_t i = 1; i < sentences.size(); ++i)
             result += " " + sentences[i];
@@ -191,15 +193,20 @@ public:
         auto words = tokenize(text);
         if (words.size() < 3) return 100.0;
         double totalLogProb = 0.0;
-        int count = 0;
+        int known = 0, unknown = 0;
         for (size_t i = 2; i < words.size(); ++i) {
             Prefix p{words[i-2], words[i-1]};
-            double lp = it->second.logProb(p, words[i]);
-            totalLogProb += lp;
-            ++count;
+            double prob = it->second.wordProb(p, words[i]);
+            if (prob > 0.0) {
+                totalLogProb += std::log(prob);
+                ++known;
+            } else {
+                ++unknown;
+            }
         }
-        if (count == 0) return 100.0;
-        return std::exp(-totalLogProb / count);
+        if (known == 0) return 100.0;
+        double avgLogProb = (totalLogProb - unknown * 5.0) / (known + unknown);
+        return std::exp(-avgLogProb);
     }
 
     double flowPerplexity(const std::string& text) const {
@@ -219,7 +226,7 @@ public:
             }
         }
         if (known == 0) return 50.0;
-        double avgLogProb = (totalLogProb - unknown * 4.0) / (known + unknown);
+        double avgLogProb = (totalLogProb - unknown * 5.0) / (known + unknown);
         return std::exp(-avgLogProb);
     }
 
@@ -257,22 +264,68 @@ private:
     static constexpr double CONTENT_WEIGHT = 0.35;
     static constexpr double FLOW_WEIGHT = 0.65;
 
+    void joinSentences(std::vector<std::string>& sentences, const std::string& genre) const {
+        if (sentences.size() < 2) return;
+        static const std::vector<std::string> CONNECTIVES = {
+            "where", "which", "while", "when", "as"
+        };
+
+        for (size_t si = 1; si < sentences.size(); ++si) {
+            std::string& prev = sentences[si - 1];
+            const std::string& curr = sentences[si];
+            if (prev.empty() || curr.empty()) continue;
+            if (prev.back() != '.') continue;
+
+            std::string base = prev.substr(0, prev.size() - 1);
+            std::string lowerCurr = curr;
+            if (!lowerCurr.empty())
+                lowerCurr[0] = static_cast<char>(std::tolower(static_cast<unsigned char>(lowerCurr[0])));
+
+            std::string bestJoined;
+            double bestScore = std::numeric_limits<double>::max();
+
+            for (const auto& conn : CONNECTIVES) {
+                std::string joined = base + " " + conn + " " + lowerCurr;
+                double score = combinedPerplexity(genre, joined);
+                if (score < bestScore) {
+                    bestScore = score;
+                    bestJoined = joined;
+                }
+            }
+
+            if (bestScore < 60.0) {
+                sentences[si - 1] = bestJoined;
+                sentences.erase(sentences.begin() + si);
+                --si;
+            }
+        }
+    }
+
     void polishSentence(std::vector<std::string>& sw, const std::string& genre) const {
         auto cit = chains.find(genre);
         if (cit == chains.end() || sw.size() < 3) return;
         const auto& chain = cit->second;
 
         auto computeCombinedPpl = [&](const std::vector<std::string>& w) -> double {
-            double contentTotal = 0;
-            int cnt = 0;
+            double contentTotal = 0.0;
+            int contentKnown = 0, contentUnknown = 0;
             for (size_t i = 2; i < w.size(); ++i) {
-                contentTotal += chain.logProb(Prefix{w[i-2], w[i-1]}, w[i]);
-                ++cnt;
+                double prob = chain.wordProb(Prefix{w[i-2], w[i-1]}, w[i]);
+                if (prob > 0.0) {
+                    contentTotal += std::log(prob);
+                    ++contentKnown;
+                } else {
+                    ++contentUnknown;
+                }
             }
-            double cp = cnt > 0 ? std::exp(-contentTotal / cnt) : 100.0;
+            double cp = 100.0;
+            if (contentKnown > 0) {
+                double avgCP = (contentTotal - contentUnknown * 5.0) / (contentKnown + contentUnknown);
+                cp = std::exp(-avgCP);
+            }
 
             double fp = 50.0;
-            if (!blueprintChain.empty() && cnt > 0) {
+            if (!blueprintChain.empty() && contentKnown > 0) {
                 double flowTotal = 0.0;
                 int flowKnown = 0, flowUnknown = 0;
                 for (size_t i = 2; i < w.size(); ++i) {
@@ -286,7 +339,7 @@ private:
                     }
                 }
                 if (flowKnown > 0) {
-                    double avgLP = (flowTotal - flowUnknown * 4.0) / (flowKnown + flowUnknown);
+                    double avgLP = (flowTotal - flowUnknown * 5.0) / (flowKnown + flowUnknown);
                     fp = std::exp(-avgLP);
                 }
             }
