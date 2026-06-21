@@ -123,7 +123,8 @@ public:
     }
 
     std::string generate(const std::string& genre, int wordCount,
-                         double swapProb = 0.15) const {
+                         double swapProb = 0.15,
+                         const std::unordered_map<std::string, std::string>& entityTags = {}) const {
         auto it = chains.find(genre);
         if (it == chains.end() || it->second.empty()) return "";
 
@@ -249,7 +250,7 @@ public:
             result = wfcDelete(result, genre);
         }
         result = fixCommonGrammar(result);
-        result = replacePlaceholders(result, genre);
+        result = replacePlaceholders(result, genre, entityTags);
         return result;
     }
 
@@ -772,7 +773,8 @@ private:
         return r;
     }
 
-    std::string replacePlaceholders(const std::string& text, const std::string& genre) const {
+    std::string replacePlaceholders(const std::string& text, const std::string& genre,
+                                     const std::unordered_map<std::string, std::string>& entityTags = {}) const {
         if (nameRegistry.empty()) return text;
         std::vector<std::string> words;
         std::istringstream iss(text);
@@ -794,13 +796,22 @@ private:
 
         for (size_t i = 0; i < words.size(); ++i) {
             std::string wd = words[i];
-            if (wd.size() < 4 || wd[0] != 'z' || wd[1] != 'z') continue;
+            if (wd.size() < 4) continue;
+            if (std::tolower(static_cast<unsigned char>(wd[0])) != 'z'
+                || std::tolower(static_cast<unsigned char>(wd[1])) != 'z') continue;
             std::string cat = wd.substr(2);
             while (!cat.empty() && std::ispunct(static_cast<unsigned char>(cat.back())))
                 cat.pop_back();
             std::transform(cat.begin(), cat.end(), cat.begin(), ::tolower);
+
+            // Check if an entity tag overrides this placeholder
+            auto tagIt = entityTags.find(cat);
+            if (tagIt != entityTags.end()) {
+                words[i] = tagIt->second;
+                continue;
+            }
+
             auto it = nameRegistry.find(cat);
-            if (it == nameRegistry.end()) continue;
             if (it == nameRegistry.end() || it->second.empty()) continue;
 
             std::string bestName = it->second.front();

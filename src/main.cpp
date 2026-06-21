@@ -53,13 +53,52 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
+        static const std::unordered_map<std::string, std::string> TAG_ALIAS = {
+            {"creature", "creaturename"}, {"creatures", "creaturename"},
+            {"faction", "factionname"}, {"factions", "factionname"},
+            {"location", "locationname"}, {"locations", "locationname"},
+            {"weapon", "weaponname"}, {"weapons", "weaponname"},
+            {"material", "material"}, {"materials", "material"},
+            {"feature", "feature"}, {"features", "feature"},
+            {"combatstyle", "combatstyle"}, {"combat", "combatstyle"},
+            {"bodypart", "bodypart"}, {"body", "bodypart"},
+            {"tactic", "tactic"}, {"tactics", "tactic"},
+            {"skill", "skill"}, {"skills", "skill"},
+            {"belief", "belief"}, {"beliefs", "belief"},
+            {"environment", "environment"}, {"env", "environment"},
+            {"movementstyle", "movementstyle"}, {"movement", "movementstyle"}
+        };
+        std::cout << "Tags (or none): ";
+        std::string tagLine;
+        std::getline(std::cin, tagLine);
+        tagLine = trim(tagLine);
+        std::unordered_map<std::string, std::string> entityTags;
+
         std::cout << "Word count: ";
         std::string countStr;
         std::getline(std::cin, countStr);
 
         try {
             int count = std::stoi(countStr);
-            std::string text = gen.generate(genre, count);
+            // Parse [Category]Name, [Category]Name, ...
+            std::istringstream tagStream(tagLine);
+            std::string token;
+            while (std::getline(tagStream, token, ',')) {
+                token = trim(token);
+                auto ob = token.find('[');
+                auto cb = token.find(']');
+                if (ob != std::string::npos && cb != std::string::npos && cb > ob) {
+                    std::string cat = token.substr(ob + 1, cb - ob - 1);
+                    std::transform(cat.begin(), cat.end(), cat.begin(), ::tolower);
+                    auto alias = TAG_ALIAS.find(cat);
+                    if (alias != TAG_ALIAS.end()) cat = alias->second;
+                    std::string name = trim(token.substr(cb + 1));
+                    if (!cat.empty() && !name.empty())
+                        entityTags[cat] = name;
+                }
+            }
+
+            std::string text = gen.generate(genre, count, 0.15, entityTags);
             std::cout << "\n--- Generated ---\n" << text << "\n";
 
             auto scores = gen.classify(text);
